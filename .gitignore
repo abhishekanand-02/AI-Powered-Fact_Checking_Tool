@@ -1,0 +1,12 @@
+.env
+.vscode/
+fc_venv/
+
+logs/
+*.log
+
+__pycache__/
+
+*.json
+
+static/
