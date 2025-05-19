@@ -3,6 +3,7 @@
 fc_venv/
 
 logs/
+mlruns/
 *.log
 
 __pycache__/
