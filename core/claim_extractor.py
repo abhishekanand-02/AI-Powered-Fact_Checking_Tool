@@ -2,7 +2,6 @@ import openai
 import json
 from config import settings
 from logger import logging
-from core.utils import save_json_to_root
 
 DEFAULT_MODEL = "gpt-4o-mini"
 
@@ -35,30 +34,33 @@ def extract_incidents_from_article(
     logging.info(f"Using model for incident extraction: {model_to_use}")
 
     system_prompt = """
-    Read the following article and identify distinct substories or incidents within it. Each substory should represent only one coherent incident, even if it contains multiple factual claims.
+        Read the following article and identify distinct substories or incidents within it. Each substory should represent only one coherent incident, even if it contains multiple factual claims.
 
-    For each identified incident, extract and return the information in the following format:
+        For each identified incident, extract and return the information in the following format:
 
-    [
-      {
-        "incident_summary": "<A concise summary of the incident>",
-        "search_statement": "<A natural language search query that can be used to find external sources about this incident>",
-        "facts": [
+        [
           {
-            "statement": "<A factual claim related to the incident>",
-            "date": "<Date if mentioned, else null>",
-            "place": "<Place if mentioned, else null>"
+            "incident_summary": "<A concise summary of the incident>",
+            "search_statement": "<Multiple distinct natural language search queries about the incident, joined using ' OR '>",
+            "facts": [
+              {
+                "statement": "<A factual claim related to the incident>",
+                "date": "<Date if mentioned, else null>",
+                "place": "<Place if mentioned, else null>"
+              }
+            ]
           }
         ]
-      }
-    ]
 
-    Guidelines:
-    - A "fact" is a statement that can be validated as true, false, or partially true using other sources.
-    - Each group of facts must relate to only one incident.
-    - Do not group together claims that describe different events.
-    - The search_statement should summarize the core of the incident in a way that could be used as a search query on Google or another search API.
-    - If a fact does not mention a date or place, return those fields as null.
+        Guidelines:
+        - A "fact" is a statement that can be validated as true, false, or partially true using external sources.
+        - Each group of facts must relate to only one incident.
+        - Do not group together claims that describe different events.
+        - For the "search_statement":
+          - Generate 2 to 4 **distinct natural language search queries** that someone might use to look up the incident online.
+          - Ensure that these queries **do not repeat phrasing** and each focuses on a slightly different angle or keyword set relevant to the same incident.
+          - Concatenate these search queries using ` OR ` (capitalized, with spaces) so they can be used directly in a search API.
+        - If a fact does not mention a date or place, return those fields as `null`.
     """
 
     user_prompt = f"""
