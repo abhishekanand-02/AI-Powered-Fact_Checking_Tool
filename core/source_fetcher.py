@@ -1,31 +1,64 @@
 import requests
 import json
-# from newsdataapi import NewsDataApiClient
+import openai
 from config import settings
 from logger import logging
-# from core.utils import save_json_to_root, load_claims_from_json
 import urllib.parse
 import urllib.request
-import os
+import time
+from typing import Optional
 
 
 NEWSDATA_MAX_RESULTS_PER_QUERY = 10
 GNEWS_MAX_RESULTS_PER_QUERY = 10
 DEFAULT_LANGUAGE = "en"
 DEFAULT_COUNTRY_FALLBACK = "in"
+DEFAULT_MODEL = "gpt-4o-mini"
 
 
-def fetch_from_newsdata(query: str, language: str = DEFAULT_LANGUAGE, country_code: str | None = None) -> list[dict]:
+def initialize_openai_client():
+    try:
+        return openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+    except Exception as e:
+        logging.error(f"Failed to initialize OpenAI client: {e}")
+        return None
+
+
+def fetch_from_newsdata(query: str, language: str = DEFAULT_LANGUAGE, country_code: Optional[str] = None) -> list[dict]:
+
     if not settings.NEWSDATA_API_KEY:
         logging.error("NewsData.io API key is not configured.")
         return []
 
-    articles_data = []
+    articles = query_newsdata_api(query, language, country_code)
+    if articles:
+        return articles
+
+    client = initialize_openai_client()
+
+    refined_query_1 = reframe_search_statement(client, query, attempt=1)
+    if refined_query_1 and refined_query_1 != query:
+        logging.info(f"Retrying with refined query 1: {refined_query_1}")
+        articles = query_newsdata_api(refined_query_1, language, country_code)
+        if articles:
+            return articles
+
+    time.sleep(5) 
+    refined_query_2 = reframe_search_statement(client, refined_query_1, attempt=2, previous_refinement=refined_query_1)
+    if refined_query_2 and refined_query_2 != refined_query_1 and refined_query_2 != query:
+        logging.info(f"Retrying with refined query 2: {refined_query_2}")
+        articles = query_newsdata_api(refined_query_2, language, country_code)
+    else:
+        logging.info("Skipping second refinement: query did not change.")
+    return articles
+
+
+def query_newsdata_api(query: str, language: str, country_code: Optional[str]) -> list[dict]:
+    time.sleep(6)
+    articles = []
     target_country = country_code.lower() if isinstance(country_code, str) and country_code.strip() else DEFAULT_COUNTRY_FALLBACK
-
-    logging.info(f"Querying NewsData.io with q='{query}', lang='{language}', country='{target_country}'")
-
     encoded_query = urllib.parse.quote(query)
+
     url = (
         f"https://newsdata.io/api/1/news?"
         f"apikey={settings.NEWSDATA_API_KEY}"
@@ -34,6 +67,8 @@ def fetch_from_newsdata(query: str, language: str = DEFAULT_LANGUAGE, country_co
         f"&country={target_country}"
     )
 
+    logging.info(f"Querying NewsData.io with q='{query}', lang='{language}', country='{target_country}'")
+
     try:
         with urllib.request.urlopen(url) as response:
             data = json.loads(response.read().decode("utf-8"))
@@ -41,17 +76,17 @@ def fetch_from_newsdata(query: str, language: str = DEFAULT_LANGUAGE, country_co
             if data.get("status") == "success":
                 results = data.get("results", [])[:NEWSDATA_MAX_RESULTS_PER_QUERY]
                 for article in results:
-                    articles_data.append({
+                    articles.append({
                         "article_id": article.get("article_id"),
                         "title": article.get("title"),
                         "description": article.get("description"),
                         "source_id_from_api": article.get("source_name")
                     })
-                logging.info(f"Fetched {len(articles_data)} articles from NewsData.io")
+
+                logging.info(f"Fetched {len(articles)} articles from NewsData.io")
             else:
                 logging.error(f"NewsData.io API error: {data.get('message', 'Unknown error')}")
                 logging.debug(f"Full response: {data}")
-
     except urllib.error.HTTPError as e:
         logging.error(f"HTTPError from NewsData.io: {e.code} - {e.reason}")
     except urllib.error.URLError as e:
@@ -60,13 +95,38 @@ def fetch_from_newsdata(query: str, language: str = DEFAULT_LANGUAGE, country_co
         logging.error(f"Unexpected exception from NewsData.io: {e}")
         logging.debug("Exception details:", exc_info=True)
 
-    return articles_data
+    return articles
 
-
-def fetch_from_gnews_io(query: str, language: str = DEFAULT_LANGUAGE, country_code: str | None = None) -> list[dict]:
+def fetch_from_gnews_io(query: str, language: str = DEFAULT_LANGUAGE, country_code: Optional[str] = None) -> list[dict]:
     if not settings.GNEWS_API_KEY:
         logging.warning("GNews.io API key is not configured.")
         return []
+
+    articles_data = query_gnews_api(query, language, country_code)
+    if articles_data :
+        return articles_data
+
+    client = initialize_openai_client()
+
+    refined_query_1 = reframe_search_statement(client, query, attempt=1)
+    if refined_query_1 and refined_query_1 != query:
+        logging.info(f"Retrying GNews with refined query 1: {refined_query_1}")
+        articles_data = query_gnews_api(refined_query_1, language, country_code)
+        if articles_data:
+            return articles_data
+
+    refined_query_2 = reframe_search_statement(client, refined_query_1, attempt=2, previous_refinement=refined_query_1)
+    if refined_query_2 and refined_query_2 != refined_query_1 and refined_query_2 != query:
+        logging.info(f"Retrying GNews with refined query 2: {refined_query_2}")
+        articles_data = query_gnews_api(refined_query_2, language, country_code)
+    else:
+        logging.info("Skipping second GNews refinement: query did not change.")
+
+    return articles_data
+
+
+def query_gnews_api(query: str, language: str, country_code: Optional[str]) -> list[dict]:
+    time.sleep(6)  
 
     gnews_api_endpoint = "https://gnews.io/api/v4/search"
     target_country = country_code.lower() if isinstance(country_code, str) and country_code.strip() else DEFAULT_COUNTRY_FALLBACK
@@ -119,6 +179,445 @@ def fetch_from_gnews_io(query: str, language: str = DEFAULT_LANGUAGE, country_co
 
 
 
+def reframe_search_statement(client: openai.OpenAI, original_query: str, attempt: int = 1, previous_refinement: Optional[str] = None) -> str:
+    
+    # print("\n\n\n\n\n\n I am triggered from reframe_search_statement, Original query is:", original_query)
+
+    if attempt == 1:
+        system_prompt = """
+            You are an expert at optimizing search queries for news APIs and search engines.
+
+            Your task is to extract only the most essential keyword or phrase from a given natural language query.
+
+            Remove:
+            - Any filler words, grammatical structure, or phrases that do not aid in finding relevant news
+
+            The result must be:
+            - A concise, meaningful keyword suitable for news article search engine
+            - Faithful to the core idea of the original query
+
+            Respond only with the improved query string. Do not include explanations or formatting.
+        """
+        user_prompt = original_query
+
+    else:
+        system_prompt = f"""
+            You are an expert at refining search queries for news APIs.
+
+            Your goal is to reduce a natural language query to a **short, meaningful** phrase made up of 1–3 keywords or named entities (like people, organizations, events, places).
+
+            You already tried this refinement: "{previous_refinement}". 
+            Do not repeat or closely resemble that version, and do not return the same structure or phrase again.
+
+            Your result should:
+            - Be different from both the original query and previous refinement
+            - Focus on key search terms
+            - Avoid unnecessary phrasing or similarity
+
+            Return only the new refined query string. No explanations.
+        """
+        user_prompt = original_query
+
+    try:
+        response = client.chat.completions.create(
+            model=DEFAULT_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": user_prompt.strip()}
+            ],
+            temperature=0.9,
+            max_tokens=30
+        )
+        refined_query = response.choices[0].message.content.strip().strip('"')
+        print("\n\n\n\n haha:", refined_query)
+        return refined_query
+    except Exception as e:
+        logging.error(f"Failed to reframe query using LLM: {e}")
+        return original_query
+
+
+
+
+
+
+
+
+# import requests
+# import json
+# import openai
+# from config import settings
+# from logger import logging
+# import urllib.parse
+# import urllib.request
+# import os
+# from typing import Optional
+
+# NEWSDATA_MAX_RESULTS_PER_QUERY = 10
+# GNEWS_MAX_RESULTS_PER_QUERY = 10
+# DEFAULT_LANGUAGE = "en"
+# DEFAULT_COUNTRY_FALLBACK = "in"
+# DEFAULT_MODEL = "gpt-4o-mini"
+
+# def initialize_openai_client():
+#     try:
+#         return openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+#     except Exception as e:
+#         logging.error(f"Failed to initialize OpenAI client: {e}")
+#         return None
+
+
+# def fetch_from_newsdata(
+#     query: str,
+#     language: str = DEFAULT_LANGUAGE,
+#     country_code: Optional[str] = None,
+#     attempt_refinement: bool = True
+# ) -> list[dict]:
+#     if not settings.NEWSDATA_API_KEY:
+#         logging.error("NewsData.io API key is not configured.")
+#         return []
+
+#     articles_data = []
+#     target_country = country_code.lower() if isinstance(country_code, str) and country_code.strip() else DEFAULT_COUNTRY_FALLBACK
+
+#     logging.info(f"Querying NewsData.io with q='{query}', lang='{language}', country='{target_country}'")
+
+#     encoded_query = urllib.parse.quote(query)
+#     url = (
+#         f"https://newsdata.io/api/1/news?"
+#         f"apikey={settings.NEWSDATA_API_KEY}"
+#         f"&q={encoded_query}"
+#         f"&language={language}"
+#         f"&country={target_country}"
+#     )
+
+#     try:
+#         with urllib.request.urlopen(url) as response:
+#             data = json.loads(response.read().decode("utf-8"))
+
+#             if data.get("status") == "success":
+#                 results = data.get("results", [])[:NEWSDATA_MAX_RESULTS_PER_QUERY]
+#                 for article in results:
+#                     articles_data.append({
+#                         "article_id": article.get("article_id"),
+#                         "title": article.get("title"),
+#                         "description": article.get("description"),
+#                         "source_id_from_api": article.get("source_name")
+#                     })
+
+#                 logging.info(f"Fetched {len(articles_data)} articles from NewsData.io")
+
+#                 if not articles_data and attempt_refinement:
+#                     logging.warning("No articles found. Attempting to refine the query using OpenAI.")
+#                     client = initialize_openai_client()
+#                     if client:
+#                         refined_query = reframe_search_statement(client, query)
+#                         if refined_query and refined_query != query:
+#                             logging.info(f"Retrying with refined query: {refined_query}")
+#                             return fetch_from_newsdata(
+#                                 query=refined_query,
+#                                 language=language,
+#                                 # country_code=None,
+#                                 attempt_refinement=False
+#                             )
+#             else:
+#                 logging.error(f"NewsData.io API error: {data.get('message', 'Unknown error')}")
+#                 logging.debug(f"Full response: {data}")
+
+#     except urllib.error.HTTPError as e:
+#         logging.error(f"HTTPError from NewsData.io: {e.code} - {e.reason}")
+#     except urllib.error.URLError as e:
+#         logging.error(f"URLError from NewsData.io: {e.reason}")
+#     except Exception as e:
+#         logging.error(f"Unexpected exception from NewsData.io: {e}")
+#         logging.debug("Exception details:", exc_info=True)
+
+#     return articles_data
+
+
+
+# def fetch_from_gnews_io(query: str, language: str = DEFAULT_LANGUAGE, country_code: Optional[str] = None) -> list[dict]:
+#     if not settings.GNEWS_API_KEY:
+#         logging.warning("GNews.io API key is not configured.")
+#         return []
+
+#     gnews_api_endpoint = "https://gnews.io/api/v4/search"
+#     target_country = country_code.lower() if isinstance(country_code, str) and country_code.strip() else DEFAULT_COUNTRY_FALLBACK
+
+#     params = {
+#         "q": query,
+#         "lang": language,
+#         "country": target_country,
+#         "max": GNEWS_MAX_RESULTS_PER_QUERY,
+#         "token": settings.GNEWS_API_KEY,
+#         "sortby": "relevance"
+#     }
+
+#     articles_data = []
+#     log_params = {k: v for k, v in params.items() if k != 'token'}
+#     logging.info(f"Querying GNews.io with params: {log_params}")
+
+#     try:
+#         response = requests.get(gnews_api_endpoint, params=params, timeout=10)
+#         response.raise_for_status()
+#         data = response.json()
+
+#         if isinstance(data.get("articles"), list):
+#             for article in data["articles"]:
+#                 source_info = article.get("source", {})
+#                 name = source_info.get("name", "Unknown Source")
+#                 articles_data.append({
+#                     "title": article.get("title"),
+#                     "description": article.get("description"),
+#                     "content": article.get("content"),
+#                     "name": name
+#                 })
+#             logging.info(f"Fetched {len(articles_data)} articles from GNews.io")
+#         else:
+#             logging.error(f"GNews.io response missing 'articles'. Response: {data}")
+
+#     except requests.exceptions.Timeout:
+#         logging.error(f"Timeout fetching from GNews.io for query '{query}'.")
+#     except requests.exceptions.HTTPError as e:
+#         logging.error(f"HTTP error from GNews.io: {e.response.status_code} - {e.response.text[:500]}")
+#     except requests.exceptions.RequestException as e:
+#         logging.error(f"Request exception from GNews.io: {e}")
+#     except json.JSONDecodeError:
+#         logging.error(f"Invalid JSON response from GNews.io: {response.text[:200]}")
+#     except Exception as e:
+#         logging.error(f"Unexpected error from GNews.io: {e}")
+#         logging.debug("Exception details:", exc_info=True)
+
+#     return articles_data
+
+
+# def reframe_search_statement(client: openai.OpenAI, original_query: str) -> str:
+#     print("\n\n\n\n\n\n I am triggered from reframe_search_statement, Original query is: " , original_query)
+#     system_prompt = """
+# You are an expert at optimizing search queries for news APIs and search engines.
+
+# Your task is to extract only the most essential keyword or phrase from a given natural language query.
+
+# Remove:
+# - Irrelevant details, functional words, and general context like job titles or known facts
+# - Any filler words, grammatical structure, or phrases that do not aid in finding relevant news
+
+# The result must be:
+# - A concise, meaningful keyword suitable for news article search
+# - Faithful to the core idea of the original query
+
+# Respond only with the improved query string. Do not include explanations or formatting.
+# """
+
+
+
+#     try:
+#         response = client.chat.completions.create(
+#             model=DEFAULT_MODEL,
+#             messages=[
+#                 {"role": "system", "content": system_prompt},
+#                 {"role": "user", "content": original_query}
+#             ],
+#             temperature=0.7,
+#             max_tokens=30
+#         )
+#         print("\n\n\n\n haha: ",response.choices[0].message.content.strip().strip('"'))
+#         return response.choices[0].message.content.strip().strip('"')
+#     except Exception as e:
+#         logging.error(f"Failed to reframe query using LLM: {e}")
+#         return original_query
+
+# Working code -----------------
+
+# import requests
+# import json
+# import openai
+# # from newsdataapi import NewsDataApiClient
+# from config import settings
+# from logger import logging
+# # from core.utils import save_json_to_root, load_claims_from_json
+# import urllib.parse
+# import urllib.request
+# import os
+
+
+# NEWSDATA_MAX_RESULTS_PER_QUERY = 10
+# GNEWS_MAX_RESULTS_PER_QUERY = 10
+# DEFAULT_LANGUAGE = "en"
+# DEFAULT_COUNTRY_FALLBACK = "in"
+
+# DEFAULT_MODEL = "gpt-4o-mini"
+
+# def initialize_openai_client():
+#     try:
+#         return openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+#     except Exception as e:
+#         logging.error(f"Failed to initialize OpenAI client: {e}")
+#         return None
+
+
+
+# def fetch_from_newsdata(query: str, language: str = DEFAULT_LANGUAGE, country_code: str | None = None) -> list[dict]:
+#     if not settings.NEWSDATA_API_KEY:
+#         logging.error("NewsData.io API key is not configured.")
+#         return []
+
+#     articles_data = []
+#     target_country = country_code.lower() if isinstance(country_code, str) and country_code.strip() else DEFAULT_COUNTRY_FALLBACK
+
+#     logging.info(f"Querying NewsData.io with q='{query}', lang='{language}', country='{target_country}'")
+
+#     encoded_query = urllib.parse.quote(query)
+#     url = (
+#         f"https://newsdata.io/api/1/news?"
+#         f"apikey={settings.NEWSDATA_API_KEY}"
+#         f"&q={encoded_query}"
+#         f"&language={language}"
+#         f"&country={target_country}"
+#     )
+
+#     try:
+#         with urllib.request.urlopen(url) as response:
+#             data = json.loads(response.read().decode("utf-8"))
+
+#             if data.get("status") == "success":
+#                 results = data.get("results", [])[:NEWSDATA_MAX_RESULTS_PER_QUERY]
+#                 for article in results:
+#                     articles_data.append({
+#                         "article_id": article.get("article_id"),
+#                         "title": article.get("title"),
+#                         "description": article.get("description"),
+#                         "source_id_from_api": article.get("source_name")
+#                     })
+
+#                 logging.info(f"Fetched {len(articles_data)} articles from NewsData.io")
+
+#                 if len(articles_data) == 0:
+#                     print("\n No articles found for the given query.")
+
+#             else:
+#                 logging.error(f"NewsData.io API error: {data.get('message', 'Unknown error')}")
+#                 logging.debug(f"Full response: {data}")
+
+#     except urllib.error.HTTPError as e:
+#         logging.error(f"HTTPError from NewsData.io: {e.code} - {e.reason}")
+#     except urllib.error.URLError as e:
+#         logging.error(f"URLError from NewsData.io: {e.reason}")
+#     except Exception as e:
+#         logging.error(f"Unexpected exception from NewsData.io: {e}")
+#         logging.debug("Exception details:", exc_info=True)
+
+#     return articles_data
+
+
+# def fetch_from_gnews_io(query: str, language: str = DEFAULT_LANGUAGE, country_code: str | None = None) -> list[dict]:
+#     if not settings.GNEWS_API_KEY:
+#         logging.warning("GNews.io API key is not configured.")
+#         return []
+
+#     gnews_api_endpoint = "https://gnews.io/api/v4/search"
+#     target_country = country_code.lower() if isinstance(country_code, str) and country_code.strip() else DEFAULT_COUNTRY_FALLBACK
+
+#     params = {
+#         "q": query,
+#         "lang": language,
+#         "country": target_country,
+#         "max": GNEWS_MAX_RESULTS_PER_QUERY,
+#         "token": settings.GNEWS_API_KEY,
+#         "sortby": "relevance"
+#     }
+
+#     articles_data = []
+#     log_params = {k: v for k, v in params.items() if k != 'token'}
+#     logging.info(f"Querying GNews.io with params: {log_params}")
+
+#     try:
+#         response = requests.get(gnews_api_endpoint, params=params, timeout=10)
+#         response.raise_for_status()
+#         data = response.json()
+
+#         if isinstance(data.get("articles"), list):
+#             for article in data["articles"]:
+#                 source_info = article.get("source", {})
+#                 name = source_info.get("name", "Unknown Source")
+#                 articles_data.append({
+#                     "title": article.get("title"),
+#                     "description": article.get("description"),
+#                     "content": article.get("content"),
+#                     "name": name
+#                 })
+#             logging.info(f"Fetched {len(articles_data)} articles from GNews.io")
+#         else:
+#             logging.error(f"GNews.io response missing 'articles'. Response: {data}")
+
+#     except requests.exceptions.Timeout:
+#         logging.error(f"Timeout fetching from GNews.io for query '{query}'.")
+#     except requests.exceptions.HTTPError as e:
+#         logging.error(f"HTTP error from GNews.io: {e.response.status_code} - {e.response.text[:500]}")
+#     except requests.exceptions.RequestException as e:
+#         logging.error(f"Request exception from GNews.io: {e}")
+#     except json.JSONDecodeError:
+#         logging.error(f"Invalid JSON response from GNews.io: {response.text[:200]}")
+#     except Exception as e:
+#         logging.error(f"Unexpected error from GNews.io: {e}")
+#         logging.debug("Exception details:", exc_info=True)
+
+#     return articles_data
+#     # pass
+
+
+
+# def reframe_search_statement(client:openai.OpenAI, original_query: str) -> str:
+#     system_prompt = """
+
+#          "You are an expert at optimizing search queries for news APIs. "
+#          "Given a complex or verbose query, your job is to simplify it to keywords "        "or short phrases that are more likely to match news articles, without changing the meaning.\n\n"
+#         "Respond only with the improved query string and nothing else."
+#     """
+#     try:
+#         response = openai.ChatCompletion.create(
+#             model="gpt-4",
+#             messages=[
+#                 {"role": "system", "content": system_prompt},
+#                 {"role": "user", "content": f"Original query: {query}"}
+#             ],
+#             temperature=0.7,
+#             max_tokens=30
+#         )
+#         return response.choices[0].message.content.strip().strip('"')
+#     except Exception as e:
+#         logging.error(f"Failed to reframe query using LLM: {e}")
+#         return original_query 
+
+
+# def refine_search_statement(query: str) -> str:
+#     """
+#     Use an LLM to simplify and refine the search query to increase the chance
+#     of matching relevant news articles from NewsData.io.
+#     """
+#     system_prompt = (
+#         "You are an expert at optimizing search queries for news APIs. "
+#         "Given a complex or verbose query, your job is to simplify it to keywords "
+#         "or short phrases that are more likely to match news articles, without changing the meaning.\n\n"
+#         "Respond only with the improved query string and nothing else."
+#     )
+
+#     try:
+#         response = openai.ChatCompletion.create(
+#             model="gpt-4",
+#             messages=[
+#                 {"role": "system", "content": system_prompt},
+#                 {"role": "user", "content": f"Original query: {query}"}
+#             ],
+#             temperature=0.7,
+#             max_tokens=30
+#         )
+#         refined_query = response.choices[0].message['content'].strip()
+#         logging.info(f"Refined query: '{refined_query}' from original: '{query}'")
+#         return refined_query
+
+#     except Exception as e:
+#         logging.error(f"Failed to refine query using LLM: {e}")
+#         return query 
 
 
 
