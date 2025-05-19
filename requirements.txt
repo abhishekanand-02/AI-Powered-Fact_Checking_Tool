@@ -3,3 +3,5 @@ openai
 requests
 newsdataapi
 python-dotenv
+beautifulsoup4
+mlflow
