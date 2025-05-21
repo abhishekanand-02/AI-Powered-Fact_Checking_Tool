@@ -7,6 +7,7 @@ import urllib.parse
 import urllib.request
 import time
 from typing import Optional
+from core.utils import sanitize_gnews_query
 
 
 NEWSDATA_MAX_RESULTS_PER_QUERY = 10
@@ -132,7 +133,7 @@ def query_gnews_api(query: str, language: str, country_code: Optional[str]) -> l
     target_country = country_code.lower() if isinstance(country_code, str) and country_code.strip() else DEFAULT_COUNTRY_FALLBACK
 
     params = {
-        "q": query,
+        "q": sanitize_gnews_query(query),
         "lang": language,
         "country": target_country,
         "max": GNEWS_MAX_RESULTS_PER_QUERY,
