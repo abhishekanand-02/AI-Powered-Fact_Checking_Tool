@@ -4,6 +4,8 @@ from typing import Optional, Dict, Any
 import openai
 import streamlit as st
 import mlflow
+import os
+import glob
 
 from logger import logging
 from config import settings
@@ -15,6 +17,12 @@ DEFAULT_MODEL = "gpt-4o-mini"
 
 mlflow.set_experiment("LLM Tracking")
 mlflow.openai.autolog()
+
+def get_latest_log_file():
+    log_files = glob.glob("logs/*.log")
+    if not log_files:
+        return None
+    return max(log_files, key=os.path.getmtime)
 
 def initialize_openai_client():
     try:
@@ -47,7 +55,7 @@ def run_fact_checking_pipeline(article_text: str) -> Optional[Dict[str, Any]]:
 
             with open("claims_from_articles.json", "w", encoding="utf-8") as f:
                 json.dump({"incidents": incidents}, f, ensure_ascii=False, indent=2)
-                mlflow.log_artifact("claims_from_articles.json")
+            mlflow.log_artifact("claims_from_articles.json")
 
             st_status_1.update(label="Stage 1: Claims extracted!", state="complete")
         except Exception as e:
@@ -71,7 +79,7 @@ def run_fact_checking_pipeline(article_text: str) -> Optional[Dict[str, Any]]:
 
             with open("filtered_articles.json", "w", encoding="utf-8") as f:
                 json.dump(all_articles, f, ensure_ascii=False, indent=2)
-                mlflow.log_artifact("filtered_articles.json")
+            mlflow.log_artifact("filtered_articles.json")
 
             st_status_2.update(label="Stage 2: Articles fetched!", state="complete")
         except Exception as e:
@@ -111,9 +119,15 @@ def run_fact_checking_pipeline(article_text: str) -> Optional[Dict[str, Any]]:
 
             with open("fact_verification_results.json", "w", encoding="utf-8") as f:
                 json.dump(all_verifications, f, ensure_ascii=False, indent=2)
-                mlflow.log_artifact("fact_verification_results.json")
+            mlflow.log_artifact("fact_verification_results.json")
 
             st_status_3.update(label="Stage 3: Verification complete!", state="complete")
+
+            # Log logs as MLflow artifacts
+            latest_log = get_latest_log_file()
+            if latest_log and os.path.exists(latest_log):
+                mlflow.log_artifact(latest_log, artifact_path="debug_logs")
+
             return results
         except Exception as e:
             st_status_3.update(label=f"Stage 3 Error: {e}", state="error")
@@ -159,6 +173,171 @@ def call_gpt_for_fact_verification(client, fact_text, all_articles_text):
     except Exception as e:
         logging.error(f"OpenAI API call failed: {e}")
         return "Error: Unable to get response"
+
+
+
+
+# import json
+# import time
+# from typing import Optional, Dict, Any
+# import openai
+# import streamlit as st
+# import mlflow
+
+# from logger import logging
+# from config import settings
+# from core.claim_extractor import initialize_openai_client as init_llm_for_claims_extraction, extract_incidents_from_article
+# from core.source_fetcher import fetch_from_newsdata, fetch_from_gnews_io
+
+
+# DEFAULT_MODEL = "gpt-4o-mini"
+
+# mlflow.set_experiment("LLM Tracking")
+# mlflow.openai.autolog()
+
+# def initialize_openai_client():
+#     try:
+#         return openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+#     except Exception as e:
+#         logging.error(f"Failed to initialize OpenAI client: {e}")
+#         return None
+
+
+# def run_fact_checking_pipeline(article_text: str) -> Optional[Dict[str, Any]]:
+#     logging.info("--- Running Streamlit Fact-Checking Pipeline ---")
+#     results = {}
+
+#     with mlflow.start_run():
+#         # Stage 1: Claim Extraction
+#         st_status_1 = st.status("Stage 1: Extracting claims from article...", expanded=True)
+#         try:
+#             llm_client = init_llm_for_claims_extraction()
+#             if not llm_client:
+#                 st_status_1.update(label="Stage 1 Failed: LLM client init error", state="error")
+#                 return None
+
+#             incidents = extract_incidents_from_article(article_text, llm_client)
+#             if not incidents:
+#                 st_status_1.update(label="Stage 1 Failed: No incidents extracted", state="error")
+#                 return None
+
+#             results["incidents"] = incidents
+#             mlflow.log_metric("num_incidents", len(incidents))
+
+#             with open("claims_from_articles.json", "w", encoding="utf-8") as f:
+#                 json.dump({"incidents": incidents}, f, ensure_ascii=False, indent=2)
+#             mlflow.log_artifact("claims_from_articles.json")
+
+#             st_status_1.update(label="Stage 1: Claims extracted!", state="complete")
+#         except Exception as e:
+#             st_status_1.update(label=f"Stage 1 Error: {e}", state="error")
+#             return None
+#         time.sleep(0.2)
+
+#         # Stage 2: Source Fetching
+#         st_status_2 = st.status("Stage 2: Fetching articles from external sources...", expanded=True)
+#         try:
+#             all_articles = []
+#             for incident in incidents:
+#                 query = incident.get("search_statement")
+#                 if not query:
+#                     continue
+#                 articles = fetch_from_newsdata(query) + fetch_from_gnews_io(query)
+#                 all_articles.extend(articles)
+
+#             results["articles"] = all_articles
+#             mlflow.log_metric("total_articles_fetched", len(all_articles))
+
+#             with open("filtered_articles.json", "w", encoding="utf-8") as f:
+#                 json.dump(all_articles, f, ensure_ascii=False, indent=2)
+#             mlflow.log_artifact("filtered_articles.json")
+
+#             st_status_2.update(label="Stage 2: Articles fetched!", state="complete")
+#         except Exception as e:
+#             st_status_2.update(label=f"Stage 2 Error: {e}", state="error")
+#             return None
+#         time.sleep(0.2)
+
+#         # Stage 3: Fact Verification
+#         st_status_3 = st.status("Stage 3: Verifying facts with LLM...", expanded=True)
+#         try:
+#             llm_client_verify = initialize_openai_client()
+#             all_verifications = []
+
+#             flat_articles = []
+#             for article in all_articles:
+#                 title = article.get("title", "")
+#                 description = article.get("description", "")
+#                 source = article.get("source_id_from_api") or article.get("name", "Unknown")
+#                 flat_articles.append(f"Title: {title}\nDescription: {description}\nSource: {source}")
+
+#             article_texts = "\n\n".join(flat_articles)
+
+#             for incident in incidents:
+#                 search_query = incident.get("search_statement")
+#                 for fact in incident.get("facts", []):
+#                     fact_text = fact.get("statement")
+#                     verdict = call_gpt_for_fact_verification(llm_client_verify, fact_text, article_texts)
+
+#                     all_verifications.append({
+#                         "fact": fact_text,
+#                         "related_search": search_query,
+#                         "verdict": verdict
+#                     })
+
+#             results["verifications"] = all_verifications
+#             mlflow.log_metric("total_facts_verified", len(all_verifications))
+
+#             with open("fact_verification_results.json", "w", encoding="utf-8") as f:
+#                 json.dump(all_verifications, f, ensure_ascii=False, indent=2)
+#             mlflow.log_artifact("fact_verification_results.json")
+
+#             st_status_3.update(label="Stage 3: Verification complete!", state="complete")
+#             return results
+#         except Exception as e:
+#             st_status_3.update(label=f"Stage 3 Error: {e}", state="error")
+#             return None
+
+
+# def call_gpt_for_fact_verification(client, fact_text, all_articles_text):
+#     prompt = f"""
+#         You are a fact verification assistant.
+
+#         Fact to verify:
+#         "{fact_text}"
+
+#         Below are the contents of multiple news articles. Each article includes its title, description, and the source name.
+
+#         Articles:
+#         {all_articles_text}
+
+#         Based on the articles, determine if the fact is:
+#         - **Proved** (if the fact's core claim is supported clearly by any article),
+#         - **Refuted** (if any article directly contradicts the fact),
+#         - **Unclear** (if articles do not give enough information).
+
+#         Your response should include:
+#         1. **Short Reasoning** (2-3 lines)
+#         2. **Final Verdict**: Proved / Refuted / Unclear
+#         3. **Supporting Source(s)**: Name the news source(s) you used to justify the verdict, if any. If verdict is Unclear, write source as  "None".
+#         4.  **Confidence Score** (0–100): Estimate your confidence level in the verdict, and briefly explain *why* you choose this score (e.g., strength or clarity of the evidence, potential ambiguity, source reliability).
+
+#         Respond in this exact format:
+#         Reasoning: ...
+#         \nVerdict: ...
+#         \nSources: ...
+#         \nConfidence Score: <number> - <short explanation why you chose this number & Verdict >
+#         """
+#     try:
+#         response = client.chat.completions.create(
+#             model=DEFAULT_MODEL,
+#             messages=[{"role": "user", "content": prompt}],
+#             temperature=0.2
+#         )
+#         return response.choices[0].message.content.strip()
+#     except Exception as e:
+#         logging.error(f"OpenAI API call failed: {e}")
+#         return "Error: Unable to get response"
 
 
 
