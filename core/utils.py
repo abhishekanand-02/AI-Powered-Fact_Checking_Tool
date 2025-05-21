@@ -65,6 +65,22 @@ def save_json_to_root(data: dict, filename: str):
         logging.error(f"Failed to save JSON data to {filename}: {e}")
 
 
+
+def sanitize_gnews_query(query: str) -> str:
+    """
+    Sanitizes a GNews query string to avoid syntax errors.
+
+    - Wraps individual OR-separated parts in quotes
+    - Leaves other queries untouched
+    """
+    print(f"\n\n\n Original query: {query}")
+    parts = [f'"{part.strip()}"' for part in query.split("OR")]
+    sanitized_query = " OR ".join(parts)
+    print(f"\n\n\n Sanitized query: {sanitized_query}")
+    return sanitized_query
+
+
+
 def load_claims_from_json(file_path: str) -> dict:
     """
     Loads the claims from a JSON file.
