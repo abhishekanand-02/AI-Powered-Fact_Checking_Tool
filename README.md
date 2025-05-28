@@ -101,7 +101,7 @@ Let’s build better tools for truth-telling, together. 💡
 ## 👨‍💻 Author
 
 **Abhishek Anand**  
-Python Developer | AI Enthusiast | Open Source Contributor  
+Python Developer | AI Enthusiast  
 🔗 [GitHub](https://github.com/abhishekanand-02) | 📧 bgsabhishekanand02@gmail.com  
 
 ---
